@@ -98,6 +98,7 @@ Copilot_Sentiment_Data["Sentiment_Score"] = Copilot_Sentiment_Data["Sentiment"].
 Copilot_Sentiment_Data["Review_Count"] = 1.0
 Copilot_Sentiment_Data["Product"] = Copilot_Sentiment_Data["Product"].astype(str).str.upper()
 Copilot_Sentiment_Data["Product_Family"] = Copilot_Sentiment_Data["Product_Family"].astype(str).str.upper()
+Copilot_Sentiment_Data["Keywords"] = Copilot_Sentiment_Data["Keywords"].astype(str).str.title()
 
 #overall_net_sentiment = round(sum(Copilot_Sentiment_Data["Sentiment_Score"])*100/sum(Copilot_Sentiment_Data["Review_Count"]),1)
 #overall_review_count = sum(Copilot_Sentiment_Data["Review_Count"])
@@ -2349,7 +2350,9 @@ if __name__ == "__main__":
                         user_ques(str(user_question_1), user_question, classification, str(user_question_chart))
                     else:
                         user_question_1 = user_question
-                        try:                            
+                        try: 
+                            gen_ans = query_detailed_generic(user_question_1)
+                            st.write(gen_ans)
                             Gen = query_quant_classify2_compare("Give me top 10 keywords with their review count  and % of positive, negative and neutral for the same keywords to answer : " +  user_question_1)
                             print(Gen)
                             st.dataframe(Gen)
