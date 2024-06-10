@@ -2386,6 +2386,7 @@ if __name__ == "__main__":
             # st.session_state['messages'] = []
             # st.session_state['chat_initiated'] = False
             st.header("Copilot Review Synthesis Tool")
+            st.session_state.user_question = None #Resetting this variable for Devices, do not delete
             if "messages" not in st.session_state:
                 st.session_state['messages'] = []
             if "chat_initiated" not in st.session_state:
