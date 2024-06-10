@@ -43,10 +43,10 @@ AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 
 
 client = AzureOpenAI(
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),  
-    api_version="2024-02-01",
-    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    )
+     api_key=os.getenv("AZURE_OPENAI_API_KEY"),  
+     api_version="2024-02-01",
+     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+     )
 
 deployment_name='Surface_Analytics'
 azure_deployment_name = "Thruxton_R"
@@ -1422,6 +1422,18 @@ def device_summarization(user_input):
     else:
         inp = user_input
         new_inp_check = False
+        if not hasattr(st.session_state, 'selected_devices'):
+            st.session_state.selected_devices = [None,None]
+        if not hasattr(st.session_state, 'past_inp'):
+            st.session_state.past_inp = None
+        if not hasattr(st.session_state, 'past_inp_comp_dev'):
+            st.session_state.past_inp_comp_dev = []
+        if not hasattr(st.session_state, 'display_history_devices'):
+            st.session_state.display_history_devices = []
+        if not hasattr(st.session_state, 'context_history_devices'):
+            st.session_state.context_history_devices = []
+        if not hasattr(st.session_state, 'curr_response'):
+            st.session_state.curr_response = ""
         if (not st.session_state.past_inp) or (st.session_state.past_inp[0] != inp):
             new_inp_check = True
             st.session_state.past_inp_comp_dev = []
@@ -1445,18 +1457,22 @@ def device_summarization(user_input):
         </div>
         """
         st.markdown(html_code, unsafe_allow_html=True)
-        st.session_state.curr_response+=f"{html_code}<br>"
+        
+        
         
         if new_inp_check:
+            st.session_state.curr_response+=f"{html_code}<br>"
             summ = get_detailed_summary(inp)
             st.session_state.past_inp = (inp, device_name, img_link, net_Sentiment, aspect_sentiment, total_sales, asp, high_specs, sale, star_rating_html, comp_devices, summ)
+            st.session_state.curr_response+=f"Detailed Summary"
+            st.session_state.curr_response+=f"<br>{summ}<br>"
+            
         st.write("")
-        st.session_state.curr_response+=f"Detailed Summary"
         st.write(r"$\textsf{\Large Detailed Summary}$")
         st.write(summ)
         save_history_devices(summ)
         st.session_state.selected_devices[0] = device_name
-        st.session_state.curr_response+=f"<br>{summ}<br>"
+        
         
         if len(comp_devices):
             st.write(r"$\textsf{\Large Compare with Similar Devices:}$")
