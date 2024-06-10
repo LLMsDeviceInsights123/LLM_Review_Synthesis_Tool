@@ -1,9 +1,16 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
 import streamlit as st
 from azure.core.credentials import AzureKeyCredential
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import numpy as np
 import faiss
 import plotly.express as px
+import plotly.graph_objects as go
 from langchain_community.vectorstores import FAISS
 from langchain_core.vectorstores import VectorStoreRetriever
 from langchain.chains import RetrievalQA
@@ -71,6 +78,13 @@ global model
 model = AzureChatOpenAI(
             azure_deployment="Thruxton_R",
             api_version='2024-03-01-preview',temperature = 0.0)
+
+if not hasattr(st.session_state, 'display_history_devices'):
+    st.session_state.display_history_devices = []
+if not hasattr(st.session_state, 'context_history_devices'):
+    st.session_state.context_history_devices = []
+if not hasattr(st.session_state, 'curr_response'):
+    st.session_state.curr_response = ""
 ####################################################################################################################----------------Copilot-------------------#####################################################################################################
 
 Copilot_Sentiment_Data  = pd.read_csv("Cleaned_Combined_Data.csv")
@@ -806,7 +820,11 @@ IMPORTANT : If a user is asking about which is best/poor, everything should be b
 Consider Product_Family Column to get different AI names.
 
 
-                                Same goes for all the columns
+                IMPORTANT: If the user is asking "Give or calculate net sentiment of Copilot, the user means the product Copilot. You should always have where condition in your query to filter for Copilot Product 
+                               
+                               Same goes for all the columns
+                               
+                               
 
                             1. If the user asks for count of column 'X', the query should be like this:
                                     SELECT COUNT('X')
@@ -1095,16 +1113,20 @@ def quantifiable_data(user_question):
         err = f"An error occurred while generating quantitative review summarization: {e}"
         return err
         
+
 def generate_chart(df):
     global full_response
     # Determine the data types of the columns
-    if df.shape[0] == 1:
-        #print("hi")
-        return
+#     if df.shape[0] == 1:
+#         #print("hi")
+#         return
     df_copy=df.copy()
     df = df[~df.applymap(lambda x: x == 'TOTAL').any(axis=1)]
-    if df.shape[0] == 1:
+    #st.write("shape of df",df)
+    if df.shape[0] == 1 or (df.shape[0]==2 and (df.iloc[0:1,-1]==df.iloc[1:2,-1])):
         return
+    
+    
     if 'REVIEW_COUNT' in df.columns:
         df.drop('REVIEW_COUNT',axis=1, inplace=True)
         #st.write(df)
@@ -1225,16 +1247,54 @@ def generate_chart(df):
             st.pyplot(plt)
             
     elif len(df.columns)==3 and len(date_cols)==1 and len(num_cols)==2:
-        line_plot = go.Scatter(x=df[date_cols[0]], y=df[num_cols[1]], mode='lines', name=f'{num_cols[1]}')
-        bar_plot = go.Bar(x=df[date_cols[0]], y=df[num_cols[0]], name=f'{num_cols[0]}')
-        fig = go.Figure(data=[line_plot, bar_plot])
-        fig.update_layout(
-            title=f'Variation of {num_cols[1]} and {num_cols[0]} with change of {date_cols[0]}',
-            xaxis_title='Date',
-            yaxis_title='Value',
-            legend=dict(x=0.1, y=1.1, orientation='h')
+        # Create traces
+        trace1 = go.Bar(
+            x=df[date_cols[0]],
+            y=df[num_cols[0]],
+            name=f'{num_cols[0]}',
+            yaxis='y1'
         )
+        
+        trace2 = go.Scatter(
+            x=df[date_cols[0]],
+            y=df[num_cols[1]],
+            name=f'{num_cols[1]}',
+            yaxis='y2',
+            mode='lines'
+        )
+
+        # Define layout with dual y-axis
+        layout = go.Layout(
+            title=f'Variation of {num_cols[1]} and {num_cols[0]} with change of {date_cols[0]}',
+            xaxis=dict(title=f'{date_cols[0]}'),
+            yaxis=dict(
+                title=f'{num_cols[0]}',
+                titlefont=dict(color='blue'),
+                tickfont=dict(color='blue')
+            ),
+            yaxis2=dict(
+                title=f'{num_cols[1]}',
+                titlefont=dict(color='green'),
+                tickfont=dict(color='green'),
+                overlaying='y',
+                side='right'
+            )
+        )
+
+        # Create figure
+        fig = go.Figure(data=[trace1, trace2], layout=layout)
         st.plotly_chart(fig)
+        
+#         line_plot = go.Scatter(x=df[date_cols[0]], y=df[num_cols[1]], mode='lines', name=f'{num_cols[1]}')
+#         bar_plot = go.Bar(x=df[date_cols[0]], y=df[num_cols[0]], name=f'{num_cols[0]}')
+#         fig = go.Figure(data=[line_plot, bar_plot])
+#         fig.update_layout(
+#             title=f'Variation of {num_cols[1]} and {num_cols[0]} with change of {date_cols[0]}',
+#             xaxis_title='Date',
+#             yaxis_title='Value',
+#             legend=dict(x=0.1, y=1.1, orientation='h')
+#         )
+#         st.plotly_chart(fig)
             
     elif len(df.columns)==3 and len(cat_cols)>=1:
         
@@ -1542,6 +1602,8 @@ def custom_color_gradient_compare(val, vmin=-100, vmax=100):
 
 
 # In[11]:
+
+
 
 
 def get_final_df(aspects_list,device):
@@ -2356,7 +2418,7 @@ if __name__ == "__main__":
                             Gen = query_quant_classify2_compare("Give me top 10 keywords with their review count  and % of positive, negative and neutral for the same keywords to answer : " +  user_question_1)
                             print(Gen)
                             st.dataframe(Gen)
-                            dic = Gen.to_dict(orient = "records")
+                            dic = Gen.to_dict(orient = "dict")
                             Gen_Q = query_detailed_generic("Summarize reviews of keywords regarding " + user_question_1 + "Which have the following keyword data:" + str(dic))
                             st.write(Gen_Q)
                             full_response += Gen_Q
@@ -2381,40 +2443,44 @@ if __name__ == "__main__":
         
         elif selected_options == "Devices":
             st.header("Devices Review Synthesis Tool")
-            if "messages" not in st.session_state:
-                st.session_state['messages'] = []
             if "chat_initiated" not in st.session_state:
                 st.session_state['chat_initiated'] = False
-            for message in st.session_state.messages:
+            for message in st.session_state.display_history_devices:
                 with st.chat_message(message["role"]):
                     if message["role"] == "assistant" and "is_html" in message and message["is_html"]:
                         st.markdown(message["content"], unsafe_allow_html=True)
                     else:
                         st.markdown(message["content"])
-            if user_question := st.chat_input("Enter the Prompt: "):
-                st.chat_message("user").markdown(user_question)
-                st.session_state.messages.append({"role": "user", "content": user_question})
+            if user_inp := st.chat_input("Enter the Prompt: "):
+                st.chat_message("user").markdown(user_inp)
+                st.session_state.display_history_devices.append({"role": "user", "content": user_inp, "is_html": False})
+                st.session_state.user_question = user_inp
+            if st.session_state.user_question:   
+            #if user_question := st.chat_input("Enter the Prompt: "):
                 with st.chat_message("assistant"):
-                    full_response = ""
-                    classification = identify_prompt(user_question)
+                    classification = identify_prompt(st.session_state.user_question)
                     if classification == 'summarization':
-                        device = identify_devices(user_question.upper())
+                        device = identify_devices(st.session_state.user_question.upper())
                         if device == "Device not available":
-                            Gen_Ans = query_devices_detailed_generic(user_question)
+                            Gen_Ans = query_devices_detailed_generic(st.session_state.user_question)
                             st.write(Gen_Ans)
-                            full_response += Gen_Ans
+                            save_history_devices(Gen_Ans)
+                            st.session_state.display_history_devices.append({"role": "assistant", "content": Gen_Ans, "is_html": False})
                         else:
                             device1 = get_sentiment_device_name(device)
                             if device1:
                                 device_summarization(device1)
+                                st.session_state.display_history_devices.append({"role": "assistant", "content": st.session_state.curr_response, "is_html": True})
+                                st.session_state.curr_response = ""
                             else:
-                                Gen_Ans = query_devices_detailed_generic(user_question)
+                                Gen_Ans = query_devices_detailed_generic(st.session_state.user_question)
                                 st.write(Gen_Ans)
-                                full_response += Gen_Ans
+                                save_history_devices(Gen_Ans)
+                                st.session_state.display_history_devices.append({"role": "assistant", "content": Gen_Ans, "is_html": False})
 
                     elif classification == 'comparison':
 #                         st.write(f"Flow : {classification}")
-                        devices = extract_comparison_devices(user_question)
+                        devices = extract_comparison_devices(st.session_state.user_question)
 #                         st.write(f"Devices from User Input: {devices}")
                         if len(devices) == 2:
                             device1 = identify_devices(devices[0].upper())
@@ -2435,12 +2501,178 @@ if __name__ == "__main__":
                                 else:
                                     #st.write(f"Detailed name for the devices: {device1} and {device2}")
                                     comparison_view(device1,device2)
+                                st.session_state.display_history_devices.append({"role": "assistant", "content": st.session_state.curr_response, "is_html": True})
+                                st.session_state.curr_response = ""
                         else:
-                            Gen_Ans = query_devices_detailed_generic(user_question)
+                            Gen_Ans = query_devices_detailed_generic(st.session_state.user_question)
                             st.write(Gen_Ans)
-                            full_response += Gen_Ans
+                            save_history_devices(Gen_Ans)
+                            st.session_state.display_history_devices.append({"role": "assistant", "content": Gen_Ans, "is_html": False})
+                    
+                    elif classification == 'quant':
+                        user_question_final=st.session_state.user_question.upper().replace("LAPTOP","")
+                        user_question_final=user_question_final.replace("DEVICE","")
+                        device = identify_devices(user_question_final)
+                        if device == "Device not available":
+                            Gen_Ans = query_devices_detailed_generic(st.session_state.user_question)
+                            st.write(Gen_Ans)
+                            save_history_devices(Gen_Ans)
+                            st.session_state.display_history_devices.append({"role": "assistant", "content": Gen_Ans, "is_html": False})
+                        else:
+                            device1 = get_sentiment_device_name(device)
+                            if device1:
+                                user_question_final=user_question_final.replace(device,device1)
+                                #st.write(user_question_final)
+                                
+                                #st.write('Quant')
+                                data= quantifiable_data_devices(user_question_final)
+#                                 st.write("original data\n")
+#                                 st.write(data)
+                                if 'NET_SENTIMENT' in data.columns:
+                                    overall_net_sentiment=data['NET_SENTIMENT'][0]
+                                    overall_net_sentiment = round(overall_net_sentiment, 1)
+                                    overall_review_count=data['REVIEW_COUNT'][0]
+                                    overall_review_count = round(overall_review_count)
+                                #if 'visual' in user_question_chart.lower() or 'visualize' in user_question_chart.lower() or 'graph' in user_question_chart.lower() or 'chart' in user_question_chart.lower() or 'visualization' in user_question_chart.lower():
+
+                                words = user_question_final.lower().split()
+                                target_words = ['visual', 'visualize', 'graph', 'chart', 'visualization']
+                                if any(word in words for word in target_words):
+                                    #st.write("for visual")
+                                    visual_data=data.copy()
+                                    numerical_cols = visual_data.select_dtypes(include='number').columns
+                                    visual_data[numerical_cols] = visual_data[numerical_cols].apply(lambda x: x.round(1) if x.dtype == 'float' else x)
+                                    generate_chart(visual_data)
+
+                                    visual_data = visual_data[~visual_data.applymap(lambda x: x == 'TOTAL').any(axis=1)]
+                                    generate_chart_insight_llm_devices(str(visual_data))
+
+                                elif len(data)>0:
+
+
+
+                                    show_output=data.copy()
+                                    #show_output=data_show.drop(index=0)
+                                    numerical_cols = data.select_dtypes(include='number').columns
+                                    data[numerical_cols] = data[numerical_cols].apply(lambda x: x.round(1) if x.dtype == 'float' else x)
+                                    numerical_cols = show_output.select_dtypes(include='number').columns
+                                    show_output[numerical_cols] = show_output[numerical_cols].apply(lambda x: x.round(1) if x.dtype == 'float' else x)
+
+                                    #st.dataframe(show_output)
+
+                                    #data2=data.copy()
+                                    #show_output = show_output.replace('Unknown', pd.NA).dropna()
+                                    #data2['Impact']=np.where(data2['NET_SENTIMENT']<overall_net_sentiment,'LOW','HIGH')
+                                    if 'NET_SENTIMENT' in show_output.columns:
+                                        conditions = [
+                                          show_output['NET_SENTIMENT'] < overall_net_sentiment,
+                                          show_output['NET_SENTIMENT'] == overall_net_sentiment
+                                                     ]
+
+                                        choices = [
+                                                    'LOW',
+                                                    ' '
+                                                     ]
+
+                                        show_output['Impact'] = np.select(conditions, choices, default='HIGH')
+#                                     st.write("after impact calculation")    
+#                                     st.write(show_output)
+
+
+
+                                    #st.dataframe(data2)
+                                    dataframe_as_dict = show_output.to_dict(orient='records')
+
+                                    try:
+                                        user_question_final = user_question_final.replace("What is the", "Summarize reviews of")
+                                    except:
+                                        pass
+                                    if 'NET_SENTIMENT' in show_output.columns:
+                                        show_output = show_output.drop(index=0)
+                                        show_output2=show_output.copy()
+                                        show_output2.drop('Impact', axis=1, inplace=True)
+                                        #st.write("final dataframe")
+                                        st.write(show_output2)
+                                        show_output2_html = show_output2.to_html(index=False)
+                                        st.session_state.display_history_devices.append({"role": "assistant", "content": show_output2_html, "is_html": True})
+                                        st.write(f" Overall Net Sentiment is {overall_net_sentiment} for {overall_review_count} reviews.")
+                                        st.session_state.display_history_devices.append({"role": "assistant", "content": f" Overall Net Sentiment is {overall_net_sentiment} for {overall_review_count} reviews.", "is_html": False})
+                                        qunat_summary = query_detailed_summary2_devices(str(show_output),user_question_final + "Which have the following sentiment data : " + str(show_output),[])
+                                        st.write(qunat_summary)
+                                        save_history_devices(qunat_summary)
+                                        st.session_state.display_history_devices.append({"role": "assistant", "content": qunat_summary, "is_html": False})
+                                    else:
+                                        show_output2=show_output.copy()
+                                        #show_output2.drop('Impact', axis=1, inplace=True)
+                                        #st.write("final dataframe")
+                                        st.write(show_output2)
+                                        show_output2_html = show_output2.to_html(index=False)
+                                        st.session_state.display_history_devices.append({"role": "assistant", "content": show_output2_html, "is_html": True})
+                                        qunat_summary = query_detailed_summary2_devices(str(show_output),user_question_final + "Which have the following sentiment data : " + str(show_output),[])
+                                        st.write(qunat_summary)
+                                        save_history_devices(qunat_summary)
+                                        st.session_state.display_history_devices.append({"role": "assistant", "content": qunat_summary, "is_html": False})
+
+
+                                    if(len(data))>1:
+
+            #                                 heat_map_visual = st.checkbox("Would you like to see visualization for this?")
+            #                                 if heat_map_visual:
+                                        
+                                        generate_chart(data)
+                                else:
+                                    st.write(data)      
+                                
+                                
+                            else:                                
+                                Gen_Ans = query_devices_detailed_generic(st.session_state.user_question)
+                                st.write(Gen_Ans)
+                                save_history_devices(Gen_Ans)
+                                st.session_state.display_history_devices.append({"role": "assistant", "content": Gen_Ans, "is_html": False})
+                        
+                    elif classification == 'sales':
+                        user_question_final=st.session_state.user_question.upper().replace("LAPTOP","")
+                        user_question_final=user_question_final.replace("DEVICE","")
+                        device = identify_devices(user_question_final)
+                        #st.write(device)
+                        if device == "Device not available":
+                            Gen_Ans = query_devices_detailed_generic(st.session_state.user_question)
+                            st.write(Gen_Ans)
+                            save_history_devices(Gen_Ans)
+                            st.session_state.display_history_devices.append({"role": "assistant", "content": Gen_Ans, "is_html": False})
+                        else:
+                            device1 = get_sales_device_name(device)
+                            #st.write(device1)
+                            if device1:
+                                user_question_final=user_question_final.replace(device,device1)
+                                
+                                brand_list=list(RCR_Sales_Data['OEMGROUP'].unique())
+#                                 for i in range(len(RCR_Sales_Data)):
+#                                     RCR_Sales_Data['Series'][i]=RCR_Sales_Data['OEMGROUP'][i]+" "+RCR_Sales_Data['Series'][i]
+                                
+                                RCR_Sales_Data['Series'] = RCR_Sales_Data['Series']+RCR_Sales_Data['OEMGROUP']
+                                #st.write(RCR_Sales_Data['Series'].unique)
+#                                 for i in brand_list:
+#                                     if i.upper() in user_question_final:
+#                                         user_question_final=user_question_final.replace(i.upper(),'')
+                                
+                                #st.write(user_question_final)
+                                response=query_quant_classify2_sales(user_question_final)
+                                if isinstance(response, pd.DataFrame):
+                                    if 'Month' in response.columns:
+                                        response['Month']=pd.to_datetime(response['Month'])
+                                        response=response.sort_values('Month')
+                                    st.dataframe(response)
+                                    show_output2_html = response.to_html(index=False)
+                                    st.session_state.display_history_devices.append({"role": "assistant", "content": show_output2_html, "is_html": True})
+                                    insight_sales=generate_chart_insight_llm_devices(response)
+                                    st.write(insight_sales)
+                                    generate_chart(response)
+                                else:
+                                    st.write(response)
+                                    st.session_state.display_history_devices.append({"role": "assistant", "content": response, "is_html": False})                           
                     else:
-                        Gen_Ans = query_devices_detailed_generic(user_question)
+                        Gen_Ans = query_devices_detailed_generic(st.session_state.user_question)
                         st.write(Gen_Ans)
                         full_response += Gen_Ans
                         
@@ -2450,3 +2682,4 @@ if __name__ == "__main__":
                 st.session_state['messages'] = []
                 st.session_state['chat_initiated'] = False
                 st.experimental_rerun()
+
