@@ -56,6 +56,14 @@ RCR_Sales_Data = pd.read_csv('RCR Sales Data Sample V3.csv')
 dev_mapping = pd.read_csv('SalesSentimentMapping.csv')
 Devices_Sentiment_Data  = pd.read_csv("Windows_Data_116K.csv")
 
+#Filtering RCR Sales Data based on devices present in Sales-Sentiment Device Name Mapping File
+mapping_sales_devices = list(dev_mapping['SalesDevice'].unique())
+RCR_Sales_Data = RCR_Sales_Data[RCR_Sales_Data['Series'].isin(mapping_sales_devices)]
+
+#Filtering Sentiment Data based on devices present in Sales-Sentiment Device Name Mapping File
+mapping_sentiment_devices = list(dev_mapping['SentimentDevice'].unique())
+Devices_Sentiment_Data = Devices_Sentiment_Data[Devices_Sentiment_Data['Product_Family'].isin(mapping_sentiment_devices)]
+
 if not hasattr(st.session_state, 'selected_devices'):
     st.session_state.selected_devices = [None,None]
 if not hasattr(st.session_state, 'past_inp'):
