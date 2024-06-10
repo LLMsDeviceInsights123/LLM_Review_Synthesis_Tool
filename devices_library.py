@@ -37,9 +37,6 @@ import streamlit as st
 from fuzzywuzzy import process
 from rapidfuzz import process, fuzz
 
-global full_response
-full_response = ""
-
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 AZURE_OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
@@ -59,10 +56,26 @@ RCR_Sales_Data = pd.read_csv('RCR Sales Data Sample V3.csv')
 dev_mapping = pd.read_csv('SalesSentimentMapping.csv')
 Devices_Sentiment_Data  = pd.read_csv("Windows_Data_116K.csv")
 
+if not hasattr(st.session_state, 'selected_devices'):
+    st.session_state.selected_devices = [None,None]
+if not hasattr(st.session_state, 'past_inp'):
+    st.session_state.past_inp = None
+if not hasattr(st.session_state, 'past_inp_comp_dev'):
+    st.session_state.past_inp_comp_dev = []
+if not hasattr(st.session_state, 'display_history_devices'):
+    st.session_state.display_history_devices = []
+if not hasattr(st.session_state, 'context_history_devices'):
+    st.session_state.context_history_devices = []
+if not hasattr(st.session_state, 'curr_response'):
+    st.session_state.curr_response = ""
+    
+def save_history_devices(summ):
+    if not hasattr(st.session_state, 'context_history_devices'):
+        st.session_state.context_history_devices = []
+    if len(st.session_state.context_history_devices)>5:
+        st.session_state.context_history_devices = st.session_state.context_history_devices[3:]
+    st.session_state.context_history_devices.append(summ)
 
-
-# if 'selected_device_comparison' not in st.session_state:
-#     st.session_state['selected_device_comparison'] = None
 
 def Sentiment_Score_Derivation(value):
     try:
@@ -260,6 +273,27 @@ def process_tablename(sql, table_name):
     return query
 
 
+def process_tablename_devices(sql, table_name):
+    try:
+        x = sql.upper()
+        query = x.replace(table_name.upper(), table_name)
+        
+        if '!=' in query or '=' in query:
+            query = query.replace("!="," NOT LIKE ")
+            query = query.replace("="," LIKE ")
+            
+            pattern = r"LIKE\s'([^']*)'"
+            def add_percentage_signs(match):
+                return f"LIKE '%{match.group(1)}%'"
+            query = re.sub(pattern, add_percentage_signs, query)
+        
+        return query
+    except Exception as e:
+        err = f"An error occurred while processing table name in SQL query: {e}"
+        return err
+        
+
+
 
 
 def get_sales_units(device_name):
@@ -388,6 +422,8 @@ def get_sentiment_device_name(input_device):
         sentiment_device_name = None
         print(f"Error in getting sentiment device name for {input_device}")
     return sentiment_device_name
+
+
     
 def get_device_image(user_input):
     dev = user_input
@@ -403,7 +439,23 @@ def get_device_image(user_input):
     return (dev, img_path)
     
 def get_net_sentiment(device_name):
-    a = query_quant_devices(device_name)
+    SQL_Query = f"""SELECT 'TOTAL' AS Aspect, 
+                        ROUND((SUM(Sentiment_Score) / SUM(Review_Count)) * 100, 1) AS Aspect_Sentiment, 
+                        SUM(Review_Count) AS Review_Count
+                        FROM Devices_Sentiment_Data
+                        WHERE Product_Family LIKE '{device_name}'
+
+                        UNION
+
+                        SELECT Aspect, 
+                        ROUND((SUM(Sentiment_Score) / SUM(Review_Count)) * 100, 1) AS Aspect_Sentiment, 
+                        SUM(Review_Count) AS Review_Count
+                        FROM Devices_Sentiment_Data
+                        WHERE Product_Family LIKE '%{device_name}%'
+                        GROUP BY Aspect
+                        ORDER BY Review_Count DESC"""
+    SQL_Query = process_tablename(SQL_Query,"Devices_Sentiment_Data")
+    a = ps.sqldf(SQL_Query, globals())
     try:
         Net_Sentiment = float(a[a['ASPECT']=='TOTAL']['ASPECT_SENTIMENT'].values[0])
         aspects = a["ASPECT"].unique()
@@ -457,28 +509,29 @@ def get_comp_device_details(user_input, df1):
     try:
         # Assuming the images are in a folder named 'Device Images'
         img_folder = 'Device Images'
-        img_path = os.path.join(img_folder, f"{sentiment_device_name}.jpg")
+        img_path = os.path.join(img_folder, f"{sentiment_device_name}.JPG")
         if not os.path.exists(img_path):
-            img_not_found = "Image Not Found"
-            img_path = os.path.join(img_folder, f"{img_not_found}.jpg")
+            img_not_found = "IMAGE NOT FOUND"
+            img_path = os.path.join(img_folder, f"{img_not_found}.JPG")
+        print(f"Image path for competitor device {sentiment_device_name}/{user_input}: {img_path}")
     except:
         img_path = None
-        print(f"Error in getting device image for {user_input}")
+        print(f"Error in getting competitor device image: {user_input}")
     if sales_data.empty:
         return user_input, img_path, None, None, None  # Return dev and link, but None for sales and ASP if no matching SERIES is found
     
     try:
         sales = str(round(float(sales_data['SALES_UNITS'].values[0]) / 1000, 2)) + "K"
     except:
-        print(f"Error in getting sales data for {user_input}")
+        print(f"Error in getting competitor sales data: {user_input}")
         sales = "NA"
     try:
         ASP = "$" + str(int(sales_data['COMPETITORASP'].values[0]))
     except:
-        print(f"Error in getting ASP for {user_input}")
+        print(f"Error in getting competitor ASP: {user_input}")
         ASP = "NA"
     net_sentiment,aspect_sentiment = get_net_sentiment(sentiment_device_name)
-    return dev, img_path, sales, ASP, net_sentiment
+    return dev, img_path, sales, ASP, net_sentiment,sentiment_device_name
     
     
 def get_final_df_devices(aspects_list,device):
@@ -613,6 +666,8 @@ def get_conversational_chain_detailed_summary_devices():
           Utilizing context and available data columns to infer the correct meaning and respond appropriately to user queries involving variations in product family names or geographical references
           Please provide a comprehensive Review summary, feature comparison, feature suggestions for specific product families and actionable insights that can help in product development and marketing strategies.
           Generate acurate response only, do not provide extra information.
+          \nFollowing is the previous conversation from User and Response, use it to get context only:""" + str(st.session_state.context_history_devices) + """\n
+                Use the above conversation chain to gain context if the current prompt requires context from previous conversation.\n. When user asks uses references like "from previous response", ":from above response" or "from above", Please refer the previous conversation and respond accordingly.\n
             
             Important: Generate outputs using the provided dataset only, don't use pre-trained information to generate outputs.\n
         Context:\n {context}?\n
@@ -739,8 +794,508 @@ def query_to_embedding_summarize(user_question, txt_file_path):
     response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
     return response['output_text']
 
+#-----------------------------------------------------Quant and Visualization-------------------------------------------------------#
+
+
+def get_conversational_chain_quant_classify2_devices():
+    #global model
+    try:
+        prompt_template = """         
+            
+            
+                    1. If the user asks for count of column 'X', the query should be like this:
+                            SELECT COUNT(DISTINCT ('X')) 
+                            FROM Devices_Sentiment_Data 
+                    2. If the user asks for count of column 'X' for different values of column 'Y', the query should be like this:
+                            SELECT 'Y', COUNT(DISTINCT('X')) AS Total_Count
+                            FROM Devices_Sentiment_Data  
+                            GROUP BY 'Y'
+                            ORDER BY TOTAL_COUNT DESC
+                    3. If the user asks for Net overall sentiment the query should be like this:
+                            SELECT ((SUM(Sentiment_Score))/(SUM(Review_Count))) * 100 AS Net_Sentiment,  SUM(Review_Count) AS Review_Count
+                            FROM Devices_Sentiment_Data 
+                            ORDER BY Net_Sentiment DESC
+
+                    4. If the user asks for Net Sentiment for column "X", the query should be exactly like this: 
+
+                            SELECT X, ((SUM(Sentiment_Score)) / (SUM(Review_Count))) * 100 AS Net_Sentiment, SUM(Review_Count) AS Review_Count
+                            FROM Devices_Sentiment_Data 
+                            GROUP BY X
+                            ORDER BY Review_Count DESC
+
+
+                    5. If the user asks for overall review count, the query should be like this:
+                            SELECT SUM(Review_Count) 
+                            FROM Devices_Sentiment_Data 
+                    6. If the user asks for review distribution across column 'X', the query should be like this:
+                            SELECT 'X', SUM(Review_Count) * 100 / (SELECT SUM(Review_Count) FROM Sentiment_Data) AS Review_Distribution
+                            FROM Devices_Sentiment_Data  
+                            GROUP BY 'X'
+                            ORDER BY Review_Distribution DESC
+                    7. If the user asks for column 'X' Distribution across column 'Y', the query should be like this: 
+                            SELECT 'Y', SUM('X') * 100 / (SELECT SUM('X') AS Reviews FROM Sentiment_Data) AS Distribution_PCT
+                            FROM Devices_Sentiment_Data  
+                            GROUP BY 'Y'
+                            ORDER BY Distribution_PCT DESC
+        
+
+                    Important: While generating SQL query to calculate net_sentiment across column 'X' and 'Y', if 'Y' has less distinct values, keep your response like this - SELECT 'Y','X', ((SUM(Sentiment_Score)) / (SUM(Review_Count))) * 100 AS Net_Sentiment, SUM(Review_Count) AS Review_Count FROM Devices_Sentiment_Data GROUP BY 'Y','X'
+                    
+                    IMPORTANT: Always replace '=' operator with LIKE keyword.
+                    IMPORTANT IMPORTANT : Always add '%' before and after filter value in LIKE OPERATOR for single or multiple WHERE conditions in the generated SQL query . Example LIKE 'Performance' should be replaced by LIKE '%Performance%'
+                    
+                    IMPORTANT : For example, if the SQL query is like - 'SELECT * FROM Devices_Sentiment_Data WHERE PRODUCT='ABC' AND GEOGRAPHY='US' ORDER BY Review_Count' , you should modify the query and share the output like this - 'SELECT * FROM Devices_Sentiment_Data WHERE PRODUCT LIKE '%ABC%' AND GEOGRAPHY LIKE '%US%' ORDER BY Review_Count'
+
+                    Important: Always include ORDER BY clause to sort the table based on the aggregate value calculated in the query.
+                    Important: Use 'LIMIT' operator instead of TOP operator.Do not use TOP OPERATOR. Follow syntax that can be used with pandasql.
+                    Important: You Response should directly start from SQL query nothing else.
+                    Important: Generate outputs using the provided dataset only, don't use pre-trained information to generate outputs.
+                    
+                    Enhance the model’s comprehension to accurately interpret user queries by:
+                      Recognizing abbreviations for country names (e.g., ‘DE’ for Germany, ‘USA’or 'usa' or 'US' for the United States of America) and expanding them to their full names for clarity.
+                      Understanding product family names even when written in reverse order or missing connecting words such as HP Laptop 15, Lenovo Legion 5 15 etc
+                      Utilizing context and available data columns to infer the correct meaning and respond appropriately to user queries involving variations in product family names or geographical references
+                      Please provide a comprehensive Review summary, feature comparison, feature suggestions for specific product families and actionable insights that can help in product development and marketing strategies.
+                      Generate acurate response only, do not provide extra information.
+
+                Context:\n {context}?\n
+                Question: \n{question}\n
+
+                Answer:
+                """
+        
+        model = AzureChatOpenAI(
+                     azure_deployment=azure_deployment_name,
+                     api_version='2023-12-01-preview',temperature = 0)
+        prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+        chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+        return chain
+    except Exception as e:
+        err = f"An error occurred while getting conversation chain for quantifiable review summarization: {e}"
+        return err
+
+def query_quant_classify2_devices(user_question, vector_store_path="faiss_index_Windows_116k"):
+    try:
+        # Initialize the embeddings model
+        #st.write("inside query_quant_classify2_devices")
+        embeddings = AzureOpenAIEmbeddings(azure_deployment="MV_Agusta")
+        
+        # Load the vector store with the embeddings model
+        vector_store = FAISS.load_local(vector_store_path, embeddings, allow_dangerous_deserialization=True)
+        
+        # Rest of the function remains unchanged
+        chain = get_conversational_chain_quant_classify2_devices()
+        #st.write(chain)
+        docs = []
+        response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
+        SQL_Query = response["output_text"]
+        #st.write(SQL_Query)
+        SQL_Query = convert_top_to_limit(SQL_Query)
+        SQL_Query = process_tablename_devices(SQL_Query,"Devices_Sentiment_Data ")
+        #st.write(SQL_Query)
+        
+        #Extract required filters applied on Copilot_Sentiment_Data dataframe
+        sql_list=list(SQL_Query.split('LIKE'))
+        col_names=[]
+        filters=[]
+        try:
+            if len(sql_list)>2:
+                for i in range(len(sql_list)): 
+                    if i==0:
+                        col_names.append(sql_list[i].split(' ')[-2])
+                    elif i==len(sql_list)-1:
+                        pattern = r'%([^%]+)%'
+                        filters.append(re.findall(pattern, sql_list[i])[0])
+                    else:
+                        col_names.append(sql_list[i].split(' ')[-2])
+                        pattern = r'%([^%]+)%'
+                        filters.append(re.findall(pattern, sql_list[i])[0])
+            elif len(sql_list)==2:
+                for i in range(len(sql_list)): 
+                    if i==0:
+                        col_names.append(sql_list[i].split(' ')[-2])
+                    elif i==len(sql_list)-1:
+                        pattern = r'%([^%]+)%'
+                        filters.append(re.findall(pattern, sql_list[i])[0])
+        except:
+            pass
+        
+        data = ps.sqldf(SQL_Query, globals())
+        #st.write(data)
+        data_1 = data
+        html_table = data.to_html(index=False)
+    #     return html_table
+        
+        #Calculate overall net-sentiment and review_count based on filtered data
+        try:
+            data2=Devices_Sentiment_Data.copy()
+            data2.columns = data2.columns.str.upper()
+            data2=data2.fillna('Unknown')
+            if len(col_names)>0 and len(filters)>0:
+                for i in range(len(col_names)):
+                    data2=data2[data2[col_names[i]].str.contains(f'{filters[i]}',case=False)]
+            #Add top row to quant data for overall net_sentiment and review count (if applicable)
+            col_list=data_1.columns
+            temp_df={}
+            if 'NET_SENTIMENT' in col_list and 'REVIEW_COUNT' in col_list:
+                for i in col_list:
+                    if i!='NET_SENTIMENT' and i!='REVIEW_COUNT':
+                        temp_df[i]=['TOTAL']
+                    elif i=='NET_SENTIMENT':
+                        temp_df[i]=[sum(data2['SENTIMENT_SCORE'])*100/sum(data2['REVIEW_COUNT'])]
+                    elif i=='REVIEW_COUNT':
+                        temp_df[i]=[sum(data2['REVIEW_COUNT'])]
+            temp_df=pd.DataFrame(temp_df)
+            union_df = pd.concat([temp_df, data_1], ignore_index=True)
+            union_df=union_df.fillna('Unknown')
+            return union_df
+        except:
+            pass
+        return data_1
+    except Exception as e:
+        
+        err = f"An error occurred while generating response for Quantify: {e}"
+        return err
+    
+    
+def get_conversational_chain_detailed_summary2_devices():
+    global model
+    try:
+        #st.write("hi-inside summary func")
+        #st.write(overall_net_sentiment,overall_review_count)
+        prompt_template = """
+
+                Important: You are provided with an input dataset. Also you have an Impact column with either "HIGH" or "LOW" values.
+        Your Job is to analyse the Net Sentiment, Geo-Wise wise sentiment of particular product or Product-wise sentiment and summarize the reviews that user asks, utilizing the reviews and numbers you get from the input data. Ensure maximum utility of the numbers and justify them using the reviews.
+        For example, if the data you receive is Geography wise net sentiment data for a particular product-
+        First give an overall summary of the data like, from which Geography most of the reviews are and which geographies have the most and least net sentiment, etc. Then, with the help of the reviews, summarize reviews from each geography and provide Pros and Cons about that Product in each Geography.
+                
+                IMPORTANT: For summarizing for all the rows, mention " It is Driving the overall net sentiment high" , if the value in the Impact column is "HIGH", else mention "It is Driving the overall net sentiment low"
+                
+
+                Example Template Format -
+
+                 -Overall Net sentiment and review count
+                 -Summary and insight generation
+                 -Some Pros and Cons in every case
+                 -Summary based on the factors that are driving the overall net sentiment high and low
+
+                For example, Geography-wise summary for a particular product -
+                Based on the provided sentiment data for Microsoft Surface Pro reviews from different geographies, here is a summary:
+
+
+                        - 1st Geography: The net sentiment for reviews with unknown geography is 5.2, based on 2,212 reviews. So its driving overall net sentiment low as its net_sentiment is less than overall net_sentiment.
+                        Overall summary of 1st geography: Users have highly positive reviews, praising its functionality and ease of use. They find it extremely helpful in their mobile development tasks and appreciate the regular updates and additions to the toolkit.
+
+                            Overall summary of the Product reviews from that Geography in 5 to 6 lines
+                            Give Some Pros and Cons of the Product from the reviews in this Geography
+
+                        - 2nd Geography: The net sentiment for reviews from the United States is 8.1, based on 1,358 reviews. So its driving overall net sentiment high as its net_sentiment is greater overall net_sentiment.
+
+                            Overall summary of the Product reviews from that Geography in 5 to 6 lines
+                           Give Some Pros and Cons of the Product from the reviews in this Geography
+
+                       - 3rd Geography: The net sentiment for reviews from Japan is 20.0, based on 165 reviews. So its driving overall net sentiment high as its net_sentiment is greater than overall net_sentiment.
+
+                            Overall summary of the Product reviews from that Geography in 5 to 6 lines
+                            Give Some Pros and Cons of the Product from the reviews in this Geography
+                            
+
+                1.Ensure to include all possible insights and findings that can be extracted, which reveals vital trends and patterns in the data
+                IMPORTANT: Don't mention at the end this statement - "It is important to note that the impact of each product family on the overall net sentiment is mentioned in the dataset"
+                
+                IMPORTANT: If only 1 row is present in the data then don't mention anything about "driving the net sentiment high or low"
+                
+                2.Share the findings or insights in a format which makes more sense to business oriented users, and can generate vital action items for them. 
+                
+                3.AT THE END OF THE SUMMARY, ALWAYS MAKE SURE TO MENTION THE FACTORS DRIVING THE OVERALL NET SENTIMENT HIGH OR LOW
+                
+                4.If any recommendations are possible based on the insights, share them as well - primarily focusing on the areas of concern.
+                5.For values like Net_Sentiment score, positive values indicate positive sentiment, negative values indicate negative sentiment and 0 value indicate neutral sentiment. For generating insights around net_sentiment feature, consider this information.
+                
+                IMPORTANT: If the maximum numerical value is less than or equal to 100, then the numerical column is indicating percentage results - therefore while referring to numbers in your insights, add % at the end of the number.
+                IMPORTANT : Dont provide any prompt message or example template written here in the response, this is for your understanding purpose
+
+                Important: Ensure to Provide the overall summary for each scenario where you are providing the net sentiment value and impact
+                Important: Modify the Geography, Product Family or Product names in the prompt as per given dataset values            
+                Important: Enhance the model’s comprehension to accurately interpret user queries by:
+                  - Recognizing abbreviations for country names (e.g., ‘DE’ for Germany, ‘USA’or 'usa' or 'US' for the United States of America) and expanding them to their full names for clarity.
+                  - Utilizing context and available data columns to infer the correct meaning and respond appropriately to user queries involving variations in product family names or geographical references]
+                 Important: Generate outputs using the provided dataset only, don't use pre-trained information to generate outputs\n
+          \nFollowing is the previous conversation from User and Response, use it to get context only:""" + str(st.session_state.context_history_devices) + """\n
+                Use the above conversation chain to gain context if the current prompt requires context from previous conversation.\n. When user asks uses references like "from previous response", ":from above response" or "from above", Please refer the previous conversation and respond accordingly.\n
+                
+                  Context:\n {context}?\n
+                  Question: \n{question}\n
+
+          Answer:
+          """
+            
+        model = AzureChatOpenAI(
+                     azure_deployment=azure_deployment_name,
+                     api_version='2023-12-01-preview',temperature = 0.2)
+        
+        prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+        chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+        return chain
+    except Exception as e:
+        err = f"An error occurred while getting conversation chain for detailed review summarization: {e}"
+        return err
+    
+def query_detailed_summary2_devices(dataframe_as_dict,user_question, history, vector_store_path="faiss_index_Windows_116k"):
+    try:
+        #st.write("hi")
+#         st.write(user_question)
+        embeddings = AzureOpenAIEmbeddings(azure_deployment="MV_Agusta")
+        vector_store = FAISS.load_local(vector_store_path, embeddings, allow_dangerous_deserialization=True)
+        chain = get_conversational_chain_detailed_summary2_devices()
+        docs = vector_store.similarity_search(user_question)
+        response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
+        return response["output_text"]
+    except Exception as e:
+        #st.write(e)
+        #st.write("hi2")
+        err = generate_chart_insight_llm(dataframe_as_dict)
+        #st.write(e)
+        return err    
+    
+def generate_chart_insight_llm_devices(user_question):
+    #global model
+    try:
+        prompt_template = """
+        
+        1.Ensure to include all possible insights and findings that can be extracted, which reveals vital trends and patterns in the data. 
+        2.Share the findings or insights in a format which makes more sense to business oriented users, and can generate vital action items for them. 
+        3.For values like Net_Sentiment score, positive values indicate positive overall sentiment, negative values indicate negative overall sentiment and 0 value indicate neutral overall sentiment. For generating insights around net_sentiment feature, consider this information.
+        IMPORTANT: If the maximum numerical value is less than or equal to 100, then the numerical column is indicating percentage results - therefore while referring to numbers in your insights, add % at the end of the number.
+        IMPORTANT : Use the data from the input only and do not give information from pre-trained data.
+        IMPORTANT : Dont provide any prompt message written here in the response, this is for your understanding purpose
+          \nFollowing is the previous conversation from User and Response, use it to get context only:""" + str(st.session_state.context_history_devices) + """\n
+                Use the above conversation chain to gain context if the current prompt requires context from previous conversation.\n. When user asks uses references like "from previous response", ":from above response" or "from above", Please refer the previous conversation and respond accordingly.\n
+           
+        Context:\n {context}?\n
+        Question: \n{question}\n
+
+        Answer:
+        """
+        
+        model = AzureChatOpenAI(
+                     azure_deployment=azure_deployment_name,
+                     api_version='2023-12-01-preview',temperature = 0.4)
+        prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+        chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+        response = chain({"input_documents": [], "question": user_question}, return_only_outputs=True)
+        st.write("\n\n",response["output_text"])
+        return response["output_text"]
+            
+    except Exception as e:
+        #st.write("inside 2nd func")
+        err = "Apologies, unable to generate insights based on the provided input data. Kindly refine your search query and try again!"
+        return err
+    
+
+def quantifiable_data_devices(user_question):
+    try:
+        #st.write("correct_func")
+        response = query_quant_classify2_devices(user_question)
+        
+        return response
+    except Exception as e:
+        err = f"An error occurred while generating quantitative review summarization: {e}"
+        return err    
+    
+    
+
+    
+#--------------------------------------------------------SALES-----------------------------------------------------------------------#  
+    
+    
+def get_conversational_chain_quant_classify2_sales():
+    try:
+
+#################################################################################################################################################################################################################################################
+        prompt_template = """
+    1. Your Job is to convert the user question to SQL Query (Follow Microsoft SQL server SSMS syntax.). You have to give the query so that it can be used on Microsoft SQL server SSMS.You have to only return query as a result.
+    2. There is only one table with table name RCR_Sales_Data where each row has. The table has 20 columns, they are:
+        Month: Contains dates for the records
+        Country: From where the sales has happened. It contains following values: 'Turkey','India','Brazil','Germany','Philippines','France','Netherlands','Spain','United Arab Emirates','Czech Republic','Norway','Belgium','Finland','Canada','Mexico','Russia','Austria','Poland','United States','Switzerland','Italy','Colombia','Japan','Chile','Sweden','Vietnam','Saudi Arabia','South Africa','Peru','Indonesia','Taiwan','Thailand','Ireland','Korea','Hong Kong SAR','Malaysia','Denmark','New Zealand','China' and 'Australia'.
+        Geography: From which Country or Region the review was given. It contains following values: 'Unknown', 'Brazil', 'Australia', 'Canada', 'China', 'Germany','France'.
+        OEMGROUP: OEM or Manufacturer of the Device. It contains following values: 'Lenovo','Acer','Asus','HP','All Other OEMs', 'Microsoft' and 'Samsung'
+        SUBFORMFACTOR: Formfactor of the device. It contains following values: 'Ultraslim Notebook'.
+        GAMINGPRODUCTS: Flag whether Device is a gaming device or not. It contains following values: 'GAMING', 'NO GAMING' and 'N.A.'.
+        SCREEN_SIZE_INCHES: Screen Size of the Device.
+        PRICE_BRAND_USD_3: Band of the price at which the device is selling. It contains following values: '0-300', '300-500', '500-800' and '800+.
+        OS_VERSION: Operating System version intall on the device. It contains following values: 'Windows 11', 'Chrome', 'Mac OS'.
+        Operating_System_Summary: Operating System installed on the device. This is at uber level. It contains following values: 'Windows', 'Google OS', 'Apple OS'.
+        Sales_Units: Number of Devices sold for that device in a prticular month and country.
+        Sales_Value: Revenue Generated by the devices sold.
+        Series: Family of the device such as IdeaPad 1, HP Laptop 15 etc.
+        Specs_Combination: Its contains the combination of Series, Processor, RAM , Storage and Screen Size. For Example: SURFACE LAPTOP GO | Ci5 | 8 GB | 256.0 SSD | 12" .
+        Chassis Segment: It contains following values: 'SMB_Upper','Mainstream_Lower','SMB_Lower','Enterprise Fleet_Lower','Entry','Mainstream_Upper','Premium Mobility_Upper','Enterprise Fleet_Upper','Premium Mobility_Lower','Creation_Lower','UNDEFINED','Premium_Mobility_Upper','Enterprise Work Station','Unknown','Gaming_Musclebook','Entry_Gaming','Creation_Upper','Mainstrean_Lower'
+        
+    3.  When Asked for Price Range you have to use ASP Column to get minimum and Maxium value. Do not consider Negative Values. Also Consider Sales Units it shouldn't be 0.
+        Exaple Query:
+            SELECT MIN(ASP) AS Lowest_Value, MAX(ASP) AS Highest_Value
+            FROM RCR_Sales_Data
+            WHERE
+            Series = 'Device Name'
+            AND ASP >= 0
+            AND Sales_Units <> 0;
+    4. Total Sales_Units Should Always be in Thousands. 
+        Example Query:
+            SELECT (SUM(Sales_Units) / 1000) AS "TOTAL SALES UNITS"
+            FROM RCR_Sales_Data
+            WHERE
+            SERIES LIKE '%SURFACE LAPTOP GO%';
+    5. Average Selling Price (ASP): It is calculated by sum of SUM(Sales_Value)/SUM(Sales_Units)
+    6. Total Sales Units across countries or across regions is sum of sales_units for those country. It should be in thousand of million hence add "K" or "M" after the number.
+        Example to calculate sales units across country:
+            SELECT Country, (SUM(Sales_Units) / 1000) AS "Sales_Units(In Thousands)"
+            FROM RCR_Sales_Data
+            GROUP BY Country
+            ORDER BY Sales_Units DESC
+    7. Total Sales Units across column "X" or across regions is sum of sales_units for those country. It should be in thousand of million hence add "K" or "M" after the number.
+        Example to calculate sales units across country:
+            SELECT "X", (SUM(Sales_Units) / 1000) AS "Sales_Units(In Thousands)"
+            FROM RCR_Sales_Data
+            GROUP BY "X"
+            ORDER BY Sales_Units DESC
+    8. If asked about the highest selling Specs Combination. 
+        Example Query:
+            SELECT Specs_Combination, (SUM(Sales_Units) / 1000) AS "TOTAL SALES UNITS"
+            FROM RCR_Sales_Data
+            WHERE SERIES LIKE '%Macbook AIR%'
+            AND SALES_UNITS <> 0
+            GROUP BY Specs_Combination
+            ORDER BY "TOTAL SALES UNITS" DESC
+            LIMIT 1;
+            
+    9. If asked about monthly ASP or Average Selling Price, the query should be : 
+           SELECT MONTH,AVG(ASP) AS Average Selling Price
+           FROM RCR_Sales_Data
+           WHERE SALES_UNITS <> 0
+           GROUP BY MONTH
+           
+    10. If asked about similar compete devices.
+    Example Query:
+            SQL = WITH DeviceNameASP AS (
+                    SELECT
+                        'Device Name' AS Series,
+                        SUM(Sales_Value) / SUM(Sales_Units) AS ASP,
+                        Chassis_Segment,
+                        SUM(Sales_Units) AS Sales_Units
+                    FROM
+                        RCR_Sales_Data
+                    WHERE
+                        Series LIKE '%Device Name%'
+                    GROUP BY
+                        Chassis_Segment
+                ),
+                CompetitorASP AS (
+                    SELECT
+                        Series,
+                        SUM(Sales_Value) / SUM(Sales_Units) AS ASP,
+                        Chassis_Segment,
+                        SUM(Sales_Units) AS Sales_Units
+                    FROM
+                        RCR_Sales_Data
+                    WHERE
+                        Operating_System_Summary IN ('Apple OS', 'Google OS','Windows OS')
+                        AND SERIES NOT LIKE '%Device Name%'
+                    GROUP BY
+                        Series, Chassis_Segment
+                ),
+                RankedCompetitors AS (
+                    SELECT
+                        C.Series,
+                        C.ASP,
+                        C.Chassis_Segment,
+                        C.Sales_Units,
+                        ROW_NUMBER() OVER (PARTITION BY C.Chassis_Segment ORDER BY C.Sales_Units DESC) AS rank
+                    FROM
+                        CompetitorASP C
+                    JOIN
+                        DeviceNameASP S
+                    ON
+                        ABS(C.ASP - S.ASP) <= 400
+                        AND C.Chassis_Segment = S.Chassis_Segment
+                )
+                SELECT
+                    Series,
+                    ASP AS CompetitorASP,
+                    Sales_Units
+                FROM
+                    RankedCompetitors
+                WHERE
+                    rank <= 3;
+
+    11. If asked about dates or year SUBSTR() function instead of Year() or Month()
+    12. Convert numerical outputs to float upto 2 decimal point.
+    13. Always include ORDER BY clause to sort the table based on the aggregate value calculated in the query.
+    14. Always use 'LIKE' operator whenever they mention about any Country, Series. Use 'LIMIT' operator instead of TOP operator.Do not use TOP OPERATOR. Follow syntax that can be used with pandasql.
+    15. If you are using any field in the aggregate function in select statement, make sure you add them in GROUP BY Clause.
+    16. Make sure to Give the result as the query so that it can be used on Microsoft SQL server SSMS.
+    17. Always use LIKE function instead of = Symbol while generating SQL Query
+    18. Important: User can ask question about any categories including Country, OEMGROUP,OS_VERSION etc etc. Hence, include the in SQL Queryif someone ask it.
+    19. Important: Use the correct column names listed above. There should not be Case Sensitivity issue. 
+    20. Important: The values in OPERATING_SYSTEM_SUMMARY are ('Apple OS', 'Google OS') not ('APPLE OS', 'GOOGLE OS'). So use exact values. Not everything should be capital letters.
+    21. Important: You Response should directly starts from SQL query nothing else.
+    22. IMPORTANT: When asked about Average Selling Price for every month, always use AVG(ASP) as aggregation
+    
+                Context:\n {context}?\n
+                Question: \n{question}\n
+
+                Answer:
+    
+               """
+########################################################################################################################################
+#########################################################################################
+        
+
+        prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+        model = AzureChatOpenAI(
+            azure_deployment=azure_deployment_name,
+            api_version='2024-03-01-preview',
+            temperature = 0.1)
+        chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+        return chain
+    except Exception as e:
+        err = f"An error occurred while getting conversation chain for quantifiable review summarization: {e}"
+        return err
+
+
+def query_quant_classify2_sales(user_question, vector_store_path="faiss_index_Windows_116k"):
+    try:
+        # Initialize the embeddings model
+        embeddings = AzureOpenAIEmbeddings(azure_deployment="MV_Agusta")
+        
+        # Load the vector store with the embeddings model
+        vector_store = FAISS.load_local(vector_store_path, embeddings, allow_dangerous_deserialization=True)
+        
+        # Rest of the function remains unchanged
+        chain = get_conversational_chain_quant_classify2_sales()
+        docs = []
+        response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
+        SQL_Query = response["output_text"]
+        # st.write(SQL_Query)
+        SQL_Query = convert_top_to_limit(SQL_Query)
+        SQL_Query = process_tablename_devices(SQL_Query,"RCR_Sales_Data")
+        #st.write(SQL_Query)
+        data = ps.sqldf(SQL_Query, globals())
+        data_1 = data
+        html_table = data.to_html(index=False)
+    #     return html_table
+        return data_1
+    except Exception as e:
+        err = f"An error occurred while generating response for quantitative review summarization: {e}"
+        return err    
+    
+#------------------------------------------------------------------------------------------------------------------------------------#
+
+
 def generate_device_details(device_input):
     global interaction
+    print(f"Input for Generate Device Details: {device_input}")
     device_name, img_link = get_device_image(device_input)
     net_Sentiment,aspect_sentiment = get_net_sentiment(device_name)
     sales_device_name = get_sales_device_name(device_name)
@@ -780,7 +1335,6 @@ def get_vector_store(chunks):
     vector_store.save_local("faiss-index")
     
 def device_details(device):
-    global full_response
     device_name, img_link, net_Sentiment, aspect_sentiment, total_sales, asp, high_specs, sale, star_rating_html, comp_devices = generate_device_details(device)
     aspects = ['Performance', 'Design', 'Display', 'Battery', 'Price', 'Software']
     with st.container(border = True):
@@ -791,7 +1345,6 @@ def device_details(device):
                     if img_link:
                         image1 = load_and_resize_image(img_link, 150)
                         st.image(image1)
-                        full_response += f'<img src="{img_link}" alt="{device_name}" height="150"><br>'
                     else:
                         st.write("Image not available for this product.")
             with st.container(height=170, border = False):
@@ -809,16 +1362,22 @@ def device_details(device):
                     asp_rating.append(get_star_rating_html(i))
                 for aspect, stars in zip(aspects, asp_rating):
                     st.markdown(f"{aspect}: {stars}",unsafe_allow_html=True)
-                    full_response += f"{aspect}: {stars}<br>"
             data_1 = Devices_Sentiment_Data.loc[Devices_Sentiment_Data["Product_Family"] == device]["Review"]
             a = device_name + "_Reviews.txt"
             data_1.to_csv(a, sep='\t')
             summary_1 = query_to_embedding_summarize("Give me the pros and cons of " + device_name, a)
 #             summary_1 = "Placeholder Summary"
             st.write(summary_1)
+            save_history_devices(summary_1)
+            
+    if device_name:
+        st.session_state.curr_response+=f"Device Name: {device_name}<br><br>"
+        if summary_1:
+            st.session_state.curr_response+=f"{summary_1}<br><br>"
 
 def comparison_view(device1, device2):
     st.write(r"$\textsf{\Large Device Comparison}$")
+    st.session_state.curr_response+=f"Device Comparison<br><br>"
     col1, col2 = st.columns(2)
     with col1:
         device_details(device1)
@@ -827,7 +1386,6 @@ def comparison_view(device1, device2):
         
         
 def identify_devices(input_string):
-    global full_response
     # First, check if any device in the Sales Data and Sentiment data is exactly in the input string
     devices_list_sentiment = list(Devices_Sentiment_Data['Product_Family'].unique())
     for device in devices_list_sentiment:
@@ -856,16 +1414,21 @@ def identify_devices(input_string):
         return "Device not available"
         
 def device_summarization(user_input):
-    global full_response
+    print(f"Device Summarization Input: {user_input}")
     if user_input == "Device not availabe":
         message = "I don't have sufficient data to provide a complete and accurate response at this time. Please provide more details or context."
         st.write(message)
-        full_response += message
+        st.session_state.curr_response+=f"{message}<br>"
     else:
         inp = user_input
-        device_name, img_link, net_Sentiment, aspect_sentiment, total_sales, asp, high_specs, sale, star_rating_html, comp_devices = generate_device_details(inp)
-        summ = get_detailed_summary(inp)
-        full_response += summ
+        new_inp_check = False
+        if (not st.session_state.past_inp) or (st.session_state.past_inp[0] != inp):
+            new_inp_check = True
+            st.session_state.past_inp_comp_dev = []
+            device_name, img_link, net_Sentiment, aspect_sentiment, total_sales, asp, high_specs, sale, star_rating_html, comp_devices = generate_device_details(inp)
+        else:
+            new_inp_check = False
+            old_inp, device_name, img_link, net_Sentiment, aspect_sentiment, total_sales, asp, high_specs, sale, star_rating_html, comp_devices, summ = st.session_state.past_inp
         html_code = f"""
         <div style="background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1); display: flex; align-items: center;">
             <div style="flex: 1; text-align: center;">
@@ -882,30 +1445,46 @@ def device_summarization(user_input):
         </div>
         """
         st.markdown(html_code, unsafe_allow_html=True)
+        st.session_state.curr_response+=f"{html_code}<br>"
+        
+        if new_inp_check:
+            summ = get_detailed_summary(inp)
+            st.session_state.past_inp = (inp, device_name, img_link, net_Sentiment, aspect_sentiment, total_sales, asp, high_specs, sale, star_rating_html, comp_devices, summ)
         st.write("")
+        st.session_state.curr_response+=f"Detailed Summary"
         st.write(r"$\textsf{\Large Detailed Summary}$")
         st.write(summ)
+        save_history_devices(summ)
+        st.session_state.selected_devices[0] = device_name
+        st.session_state.curr_response+=f"<br>{summ}<br>"
         
-        
-        col_list = [None, None, None]
-#         checkbox_state = []
-#         for i in range(len(list(comp_devices['SERIES']))):
-#             checkbox_state.append(False)
-        col_list[0], col_list[1], col_list[2] = st.columns(3)
         if len(comp_devices):
-#             st.write(r"$\textsf{\Large Compare with Similar Devices:}$")
+            st.write(r"$\textsf{\Large Compare with Similar Devices:}$")
+            col_list = [None, None, None]
+            checkbox_state = []
             comp_devices_list = comp_devices['SERIES'].tolist()
+            for i in range(len(comp_devices_list)):
+                if i<3:
+                    checkbox_state.append(False)
+            col_list[0], col_list[1], col_list[2] = st.columns(3)
+            com_sent_dev_list = [None,None,None]
             for i in range(len(comp_devices_list)):
                 if i < 3:
                     with col_list[i]:
-                        com_device_name, img_path, com_sales, ASP, net_sentiment = get_comp_device_details(comp_devices_list[i], comp_devices)
-                        com_star_rating_html = get_star_rating_html(net_sentiment)
-                        with st.container(border = True, height = 280):
-                            with st.container(border = False, height = 250):
+                        if new_inp_check:
+                            com_device_name, img_path, com_sales, ASP, net_sentiment,com_sent_dev_name = get_comp_device_details(comp_devices_list[i], comp_devices)
+                            com_star_rating_html = get_star_rating_html(net_sentiment)
+                            st.session_state.past_inp_comp_dev.append((com_device_name, img_path, com_sales, ASP, net_sentiment,com_sent_dev_name,com_star_rating_html))
+                        else:
+                            com_device_name, img_path, com_sales, ASP, net_sentiment,com_sent_dev_name, com_star_rating_html = st.session_state.past_inp_comp_dev[i]
+                            
+                        com_sent_dev_list[i] = com_sent_dev_name
+                        with st.container(border = True, height = 300):
+                            with st.container(border = False, height = 220):
                                 html_content = f"""
                                 <div style="text-align: center; display: inline-block; ">
                                     <img src="data:image/jpeg;base64,{base64.b64encode(open(img_path, "rb").read()).decode()}" width = "80" style="margin-bottom: 10px;">
-                                    <div style="font-size: 16px; color: #333;">{com_device_name}</div>
+                                    <div style="font-size: 16px; color: #333;">{com_sent_dev_name}</div>
                                     <div style="font-size: 14px; color: #666;">Sales: {com_sales}</div>
                                     <div style="font-size: 14px; color: #666;">Average Selling Price: {ASP}</div>
                                     <p>{com_star_rating_html}</p>
@@ -913,17 +1492,18 @@ def device_summarization(user_input):
                             """
                                 st.markdown(html_content, unsafe_allow_html=True)
                             
-    #                     checkbox_state[i] = st.checkbox(f"Compare {com_device_name}")
+                            checkbox_state[i] = st.checkbox("Compare",key=f"comparison_checkbox_{i}")
     
-#         for i in range(len(checkbox_state)):
-#             if checkbox_state[i]:
-#                 st.session_state['selected_device_comparison'] = comp_devices_list[i]
-#                 st.write(f"You have selected device {comp_devices_list[i]}")
-#                 break
-#             st.session_state['selected_device_comparison'] = None
+        for i in range(len(checkbox_state)):
+            if checkbox_state[i]:
+                st.session_state.selected_devices[1] = com_sent_dev_list[i]
+                print(f"Comparison between {device_name} and {com_sent_dev_list[i]}")
+                break
+            st.session_state.selected_devices[1] = None
         
-#         if st.session_state['selected_device_comparison']:
-#             comparison_view(device_name,get_sentiment_device_name(st.session_state['selected_device_comparison']))
+        if st.session_state.selected_devices[1]:
+            comparison_view(st.session_state.selected_devices[0],st.session_state.selected_devices[1])
+            st.session_state.selected_devices = [None, None]
 
 def extract_comparison_devices(user_question):
     try:
@@ -993,6 +1573,17 @@ Comparison:
         -IMPORTANT: Do not choose Comparison if more than two Product Families are mentioned.
         -IMPORTANT: Choose Others if user mentions more than 2 devices or laptops or Product Family.
         
+        
+Quant: Choose this if the prompt seeks a quantitative or numerical answer around net sentiment or review count for different product families or geographies
+        (e.g., "Calculate the net sentiment for different product families",
+                   "What is the net sentiment for different geographies of product_family "A"?
+                   "What is the net sentiment across different aspects of device "X"? etc.)
+        
+Sales: Choose this if the prompt seeks a quantitative or numerical answer around net sales or net sales units or average sales price for different product families or geographies
+        (e.g., "Calculate the net sales for different product families",
+                   "What is the net sales for different geographies of product_family "A"?
+                   "What is the average sales price across different aspects of device "X"? etc.)
+        
 
 Generic:
 
@@ -1009,12 +1600,15 @@ Important Notes:
 
 Your response should be one of the following:
 
+
 "Summarization"
 "Comparison"
+"Quant"
+"Sales"
 "Other"
 
         Input: User prompt about customer reviews
-        Output: Category (Summarization, Comparison, or Other)
+        Output: Category (Summarization, Comparison, Quant, Sales or Other)
         Context:
         {context}
         Question:
@@ -1035,11 +1629,15 @@ Your response should be one of the following:
         response = chain({"input_documents": [], "question": user_question}, return_only_outputs=True)
         print(response)
 
-        # Determine the output category based on the response
+         # Determine the output category based on the response
         if "summarization" in response["output_text"].lower():
             return "summarization"
         elif "comparison" in response["output_text"].lower():
             return "comparison"
+        elif "quant" in response["output_text"].lower():
+            return "quant"
+        elif "sales" in response["output_text"].lower():
+            return "sales"
         else:
             return "other"
     except:
@@ -1077,6 +1675,8 @@ def get_conversational_chain_devices_generic():
                       Utilizing context and available data columns to infer the correct meaning and respond appropriately to user queries involving variations in product family names or geographical references
                       Please provide a comprehensive Review summary, feature comparison, feature suggestions for specific product families and actionable insights that can help in product development and marketing strategies.
                       Generate acurate response only, do not provide extra information.
+          \nFollowing is the previous conversation from User and Response, use it to get context only:""" + str(st.session_state.context_history_devices) + """\n
+                Use the above conversation chain to gain context if the current prompt requires context from previous conversation.\n. When user asks uses references like "from previous response", ":from above response" or "from above", Please refer the previous conversation and respond accordingly.\n
             
             IMPORTANT: Generate outputs using the provided dataset only, don't use pre-trained information to generate outputs.
             
@@ -1235,6 +1835,8 @@ def get_conversational_chain_quant_devices():
             17. Important: Always use LIKE keyword instead of = symbol while generating SQL query.
             18. Important: Generate outputs using the provided dataset only, don't use pre-trained information to generate outputs.
             19. Sort all Quantifiable outcomes based on review count
+          \nFollowing is the previous conversation from User and Response, use it to get context only:""" + str(st.session_state.context_history_devices) + """\n
+                Use the above conversation chain to gain context if the current prompt requires context from previous conversation.\n. When user asks uses references like "from previous response", ":from above response" or "from above", Please refer the previous conversation and respond accordingly.\n
         Context:\n {context}?\n
         Question: \n{question}\n
 
